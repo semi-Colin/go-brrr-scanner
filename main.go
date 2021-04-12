@@ -51,19 +51,21 @@ type operatingOptions struct {
 }
 
 var (
-	synFlag, tcpFlag, ackFlag, udpFlag bool
-	portStr                            string
-	options                            operatingOptions
+	synFlag, tcpFlag, ackFlag, udpFlag, verbFlag bool
+	portStr                                      string
+	options                                      operatingOptions
 )
 
+// init() - parse flags, initialize some vars, sanity check
 func init() {
 	flag.BoolVar(&synFlag, "s", CAN_SCAN, "SYN stealth scan")
 	flag.BoolVar(&tcpFlag, "sT", CAN_SCAN, "TCP connect scan")
 	flag.BoolVar(&ackFlag, "sA", CAN_SCAN, "ACK scan")
 	flag.BoolVar(&udpFlag, "sU", CAN_SCAN, "UDP scan")
-	flag.StringVar(&portStr, "p", PORTS_DEFAULT, "`port range` in either 1-1024, 1,2,3,4, or 1-1024 1,2,3,4 format")
+	flag.StringVar(&portStr, "p", PORTS_DEFAULT, "`port range` in either 1-1024, 1,2,3,4, or 1-1024::1,2,3,4 format")
 	flag.IntVar(&options.threadCount, "t", THREAD_DEFAULT, "Number of threads(i.e. goroutines) to use")
 	flag.DurationVar(&options.waitTime, "wait", WAIT_DEFAULT, "Set wait time between scan attempts, e.g. 500ms or 2s")
+	flag.BoolVar(&verbFlag, "v", false, "Verbosity level 1 - shows closed ports and open ports")
 	flag.Parse()
 
 	// Check if IP or URL has been passed, else terminate
@@ -85,7 +87,7 @@ func init() {
 	}
 }
 
-// CHANGE THIS
+// main() -
 func main() {
 
 	// this channel will receive ports to be scanned
@@ -102,8 +104,14 @@ func main() {
 
 	// send ports to be scanned
 	go func() {
+
+		//read in range
 		for i := options.ports.min; i <= options.ports.max; i++ {
 			portsChan <- i
+		}
+
+		for _, v := range options.ports.list {
+			portsChan <- v
 		}
 	}()
 
@@ -124,7 +132,7 @@ func main() {
 	}
 }
 
-// CHANGE THIS
+// worker(addr, pCh, rCh) - worker in goroutine dialing ports and logging connections
 func worker(addr string, pCh, rCh chan int) {
 	for p := range pCh {
 		fullAddr := fmt.Sprintf("%s:%d", addr, p)
@@ -138,6 +146,7 @@ func worker(addr string, pCh, rCh chan int) {
 	}
 }
 
+// parsePorts(portStr) (portData, error) -
 func parsePorts(portStr string) (portData, error) {
 	//Initialize
 	var ports portData
@@ -159,8 +168,9 @@ func parsePorts(portStr string) (portData, error) {
 	}
 
 	//Parse input port format, range, literals, or combo
-	if b, e := regexp.MatchString(RANGE_EXP+` `+LIST_EXP, portStr); b && e == nil {
-		p := strings.Split(" ", portStr)
+	//Set total number of ports (ports.total)
+	if b, e := regexp.MatchString(RANGE_EXP+`::`+LIST_EXP, portStr); b && e == nil {
+		p := strings.Split("::", portStr)
 		rangeParse(p[0])
 		listParse(p[1])
 		ports.total = ports.max - ports.min + len(ports.list)
