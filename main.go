@@ -1,8 +1,11 @@
 /*
-	Possible revise line 19 to change to nested struct
-		Want to accept ports as range 1-1024 and also as 1,2,3,4 or just 80
+	Revise parsing of ports ranges, fails to properly parse range and literals (ex. 1-1024 1025,1026)
+		example usage that fails: go run main.go -s -p 1-1024 1025,1026 127.0.0.1
+		rethink either acceptable input or parsing
+	Enable/disable scanning based on flag types
+
 	Review var,const, and init
-	Rethink control flow and options
+	Rewrite if possible to avoid global vars
 
 	COMMENT YOUR CODE YOU BARBARIAN - me to me
 */
@@ -37,6 +40,7 @@ type portData struct {
 	min    int
 	max    int
 	absMax int
+	total  int
 }
 
 type operatingOptions struct {
@@ -57,10 +61,12 @@ func init() {
 	flag.BoolVar(&tcpFlag, "sT", CAN_SCAN, "TCP connect scan")
 	flag.BoolVar(&ackFlag, "sA", CAN_SCAN, "ACK scan")
 	flag.BoolVar(&udpFlag, "sU", CAN_SCAN, "UDP scan")
-	flag.StringVar(&portStr, "p", PORTS_DEFAULT, "`port range` in either 1-1024 or 1,2,3,4 format")
+	flag.StringVar(&portStr, "p", PORTS_DEFAULT, "`port range` in either 1-1024, 1,2,3,4, or 1-1024 1,2,3,4 format")
 	flag.IntVar(&options.threadCount, "t", THREAD_DEFAULT, "Number of threads(i.e. goroutines) to use")
 	flag.DurationVar(&options.waitTime, "wait", WAIT_DEFAULT, "Set wait time between scan attempts, e.g. 500ms or 2s")
 	flag.Parse()
+
+	// Check if IP or URL has been passed, else terminate
 	if addr := flag.Arg(0); addr != "" {
 		options.address = addr
 	} else {
@@ -69,6 +75,7 @@ func init() {
 		os.Exit(1)
 	}
 
+	//Check for proper port
 	var e error
 	options.ports, e = parsePorts(portStr)
 	if e != nil {
@@ -78,56 +85,11 @@ func init() {
 	}
 }
 
-func parsePorts(portStr string) (portData, error) {
-	var ports portData
-	ports.absMax = PORT_ABS_MAX
-
-	rangeParse := func(s string) {
-		tok := strings.Split(s, "-")
-		ports.min, _ = strconv.Atoi(tok[0])
-		ports.max, _ = strconv.Atoi(tok[1])
-	}
-	listParse := func(s string) {
-		tok := strings.Split(s, ",")
-		for _, v := range tok {
-			p, _ := strconv.Atoi(v)
-			ports.list = append(ports.list, p)
-		}
-	}
-
-	if b, e := regexp.MatchString(RANGE_EXP+` `+LIST_EXP, portStr); b && e == nil {
-		p := strings.Split(" ", portStr)
-		rangeParse(p[0])
-		listParse(p[1])
-	} else if b, e := regexp.MatchString(RANGE_EXP, portStr); b && e == nil {
-		rangeParse(portStr)
-	} else if b, e := regexp.MatchString(LIST_EXP, portStr); b && e == nil {
-		listParse(portStr)
-	} else {
-		return ports, errors.New("could not parse provided port range/list - " + portStr)
-	}
-	return ports, nil
-}
-
-// CHANGE THIS
-func worker(addr string, pCh, rCh chan int) {
-	for p := range pCh {
-		fullAddr := fmt.Sprintf("%s:%d", addr, p)
-		conn, err := net.Dial("tcp", fullAddr)
-		if err != nil {
-			rCh <- 0
-			continue
-		}
-		conn.Close()
-		rCh <- p
-	}
-}
-
 // CHANGE THIS
 func main() {
-	fmt.Printf("%d-%d\n", options.ports.min, options.ports.max)
+
 	// this channel will receive ports to be scanned
-	portsChan := make(chan int, 100)
+	portsChan := make(chan int, options.threadCount)
 	// this channel will receive results of scanning
 	resultsChan := make(chan int)
 	// create a slice to store the results so that they can be sorted later.
@@ -145,7 +107,7 @@ func main() {
 		}
 	}()
 
-	for i := 0; i < 1024; i++ {
+	for i := 0; i < options.ports.total; i++ {
 		port := <-resultsChan
 		if port != 0 {
 			openports = append(openports, port)
@@ -160,4 +122,56 @@ func main() {
 	for _, port := range openports {
 		fmt.Printf("%d open\n", port)
 	}
+}
+
+// CHANGE THIS
+func worker(addr string, pCh, rCh chan int) {
+	for p := range pCh {
+		fullAddr := fmt.Sprintf("%s:%d", addr, p)
+		conn, err := net.Dial("tcp", fullAddr)
+		if err != nil {
+			rCh <- 0
+			continue
+		}
+		conn.Close()
+		rCh <- p
+	}
+}
+
+func parsePorts(portStr string) (portData, error) {
+	//Initialize
+	var ports portData
+	ports.absMax = PORT_ABS_MAX
+
+	//Helper for range format
+	rangeParse := func(s string) {
+		tok := strings.Split(s, "-")
+		ports.min, _ = strconv.Atoi(tok[0])
+		ports.max, _ = strconv.Atoi(tok[1])
+	}
+	//Helper for list format
+	listParse := func(s string) {
+		tok := strings.Split(s, ",")
+		for _, v := range tok {
+			p, _ := strconv.Atoi(v)
+			ports.list = append(ports.list, p)
+		}
+	}
+
+	//Parse input port format, range, literals, or combo
+	if b, e := regexp.MatchString(RANGE_EXP+` `+LIST_EXP, portStr); b && e == nil {
+		p := strings.Split(" ", portStr)
+		rangeParse(p[0])
+		listParse(p[1])
+		ports.total = ports.max - ports.min + len(ports.list)
+	} else if b, e := regexp.MatchString(RANGE_EXP, portStr); b && e == nil {
+		rangeParse(portStr)
+		ports.total = ports.max - ports.min
+	} else if b, e := regexp.MatchString(LIST_EXP, portStr); b && e == nil {
+		listParse(portStr)
+		ports.total = len(ports.list)
+	} else {
+		return ports, errors.New("could not parse provided port range/list - " + portStr)
+	}
+	return ports, nil
 }
