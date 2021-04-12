@@ -1,7 +1,7 @@
 /*
-	Revise parsing of ports ranges, fails to properly parse range and literals (ex. 1-1024 1025,1026)
-		example usage that fails: go run main.go -s -p 1-1024 1025,1026 127.0.0.1
-		rethink either acceptable input or parsing
+	REVISE: sending ports to be scanned repeats logic used in parsePorts, consider restructuring
+	PARTIAL FIX: port parsing
+	ISSUE: goroutine panic
 	Enable/disable scanning based on flag types
 
 	Review var,const, and init
@@ -90,6 +90,9 @@ func init() {
 // main() -
 func main() {
 
+	if options.threadCount > options.ports.total {
+		options.threadCount = options.ports.total
+	}
 	// this channel will receive ports to be scanned
 	portsChan := make(chan int, options.threadCount)
 	// this channel will receive results of scanning
@@ -104,15 +107,25 @@ func main() {
 
 	// send ports to be scanned
 	go func() {
-
-		//read in range
-		for i := options.ports.min; i <= options.ports.max; i++ {
-			portsChan <- i
+		//REVISE: repeated logic from parsePorts, determining range vs list vs combo
+		switch {
+		case options.ports.min != 0 && len(options.ports.list) > 0:
+			for i := options.ports.min; i <= options.ports.max; i++ {
+				portsChan <- i
+			}
+			for _, v := range options.ports.list {
+				portsChan <- v
+			}
+		case options.ports.min != 0:
+			for i := options.ports.min; i <= options.ports.max; i++ {
+				portsChan <- i
+			}
+		case len(options.ports.list) > 0:
+			for _, v := range options.ports.list {
+				portsChan <- v
+			}
 		}
 
-		for _, v := range options.ports.list {
-			portsChan <- v
-		}
 	}()
 
 	for i := 0; i < options.ports.total; i++ {
@@ -138,6 +151,7 @@ func worker(addr string, pCh, rCh chan int) {
 		fullAddr := fmt.Sprintf("%s:%d", addr, p)
 		conn, err := net.Dial("tcp", fullAddr)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not connect: %s\n", err.Error())
 			rCh <- 0
 			continue
 		}
