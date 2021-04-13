@@ -26,21 +26,20 @@ import (
 )
 
 const (
-	CAN_SCAN       = false
-	PORTS_DEFAULT  = "1-1024"
-	WAIT_DEFAULT   = 1000000000 //duration in ms
-	PORT_ABS_MAX   = 65353
-	THREAD_DEFAULT = 100
-	RANGE_EXP      = `\d+-\d+`
-	LIST_EXP       = `(\d+,|\d+)+`
+	CAN_SCAN       = false         //default scan settings
+	PORTS_DEFAULT  = "1-1024"      //default port range
+	WAIT_DEFAULT   = 1000000000    //duration in ms
+	THREAD_DEFAULT = 100           //default goroutine count
+	RANGE_EXP      = `\d+-\d+`     //regex for port range
+	LIST_EXP       = `(\d+,|\d+)+` //regex for port list
 )
 
 type portData struct {
-	list   []int
-	min    int
-	max    int
-	absMax int
-	total  int
+	format int   //indicator for combo(3), range (2), or list (1)
+	list   []int //holds ports provided as list
+	min    int   //min range
+	max    int   //max range
+	total  int   //total ports
 }
 
 type operatingOptions struct {
@@ -77,7 +76,7 @@ func init() {
 		os.Exit(1)
 	}
 
-	//Check for proper port
+	//Check for proper port and set threadCount
 	var e error
 	options.ports, e = parsePorts(portStr)
 	if e != nil {
@@ -85,49 +84,26 @@ func init() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
+	//prevent more threads than ports
+	if options.threadCount > options.ports.total {
+		options.threadCount = options.ports.total
+	}
 }
 
 // main() -
 func main() {
-
-	if options.threadCount > options.ports.total {
-		options.threadCount = options.ports.total
-	}
+	// create a slice to store the results so that they can be sorted later.
+	var openports []int
 	// this channel will receive ports to be scanned
 	portsChan := make(chan int, options.threadCount)
 	// this channel will receive results of scanning
 	resultsChan := make(chan int)
-	// create a slice to store the results so that they can be sorted later.
-	var openports []int
 
-	// create a pool of workers
-	for i := 0; i < cap(portsChan); i++ {
-		go worker(options.address, portsChan, resultsChan)
-	}
+	// create a pool of workers and send ports for scanning
+	createWorkerPool(options, portsChan, resultsChan)
+	go fillPortsChan(options, portsChan)
 
-	// send ports to be scanned
-	go func() {
-		//REVISE: repeated logic from parsePorts, determining range vs list vs combo
-		switch {
-		case options.ports.min != 0 && len(options.ports.list) > 0:
-			for i := options.ports.min; i <= options.ports.max; i++ {
-				portsChan <- i
-			}
-			for _, v := range options.ports.list {
-				portsChan <- v
-			}
-		case options.ports.min != 0:
-			for i := options.ports.min; i <= options.ports.max; i++ {
-				portsChan <- i
-			}
-		case len(options.ports.list) > 0:
-			for _, v := range options.ports.list {
-				portsChan <- v
-			}
-		}
-
-	}()
-
+	// empty channel to openports
 	for i := 0; i < options.ports.total; i++ {
 		port := <-resultsChan
 		if port != 0 {
@@ -136,8 +112,9 @@ func main() {
 	}
 
 	// After all the work has been completed, close the channels
-	close(portsChan)
-	close(resultsChan)
+	defer close(portsChan)
+	defer close(resultsChan)
+
 	// sort open port numbers
 	sort.Ints(openports)
 	for _, port := range openports {
@@ -160,11 +137,38 @@ func worker(addr string, pCh, rCh chan int) {
 	}
 }
 
+// createWorkerPool(o, pCh, rCh) - run each worker as goroutine x threadCount
+func createWorkerPool(o operatingOptions, pCh chan int, rCh chan int) {
+	for i := 0; i < o.threadCount; i++ {
+		go worker(o.address, pCh, rCh)
+	}
+}
+
+//fillPortsChan(o, pCh) - depending on format, send ports to be scanned
+func fillPortsChan(o operatingOptions, pCh chan int) {
+	//REVISE: repeated logic from parsePorts, determining range vs list vs combo
+	switch o.ports.format {
+	case 3:
+		for i := options.ports.min; i <= options.ports.max; i++ {
+			pCh <- i
+		}
+		for _, v := range options.ports.list {
+			pCh <- v
+		}
+	case 2:
+		for i := options.ports.min; i <= options.ports.max; i++ {
+			pCh <- i
+		}
+	case 1:
+		for _, v := range options.ports.list {
+			pCh <- v
+		}
+	}
+}
+
 // parsePorts(portStr) (portData, error) -
 func parsePorts(portStr string) (portData, error) {
-	//Initialize
 	var ports portData
-	ports.absMax = PORT_ABS_MAX
 
 	//Helper for range format
 	rangeParse := func(s string) {
@@ -188,12 +192,15 @@ func parsePorts(portStr string) (portData, error) {
 		rangeParse(p[0])
 		listParse(p[1])
 		ports.total = ports.max - ports.min + len(ports.list)
+		ports.format = 3
 	} else if b, e := regexp.MatchString(RANGE_EXP, portStr); b && e == nil {
 		rangeParse(portStr)
 		ports.total = ports.max - ports.min
+		ports.format = 2
 	} else if b, e := regexp.MatchString(LIST_EXP, portStr); b && e == nil {
 		listParse(portStr)
 		ports.total = len(ports.list)
+		ports.format = 1
 	} else {
 		return ports, errors.New("could not parse provided port range/list - " + portStr)
 	}
