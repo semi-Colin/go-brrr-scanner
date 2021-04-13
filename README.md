@@ -1,3 +1,4 @@
 # go-brrr-scanner
-Golang based port-scanner
-Multithreaded, but can certainly be optimized. 
+Lightweight Golang Port scanner
+Designed to support multiple scan types (SYN,TCP,ACK,UDP)
+
