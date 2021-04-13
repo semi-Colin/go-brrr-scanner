@@ -1,10 +1,12 @@
 package goscan
 
-import (
-	"time"
-)
+type ScanResult struct {
+	Port  int
+	State string
+}
 
-type portData struct {
+/*
+type PortData struct {
 	list   []int
 	min    int
 	max    int
@@ -15,6 +17,11 @@ type portData struct {
 type ScanParams struct {
 	address  string
 	waitTime time.Duration
+}
+*/
+
+func Scan() {
+
 }
 
 func synScan() {
